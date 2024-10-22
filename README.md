@@ -40,12 +40,6 @@ Install the necessary Python packages:
 pip install -r requirements.txt
 ```
 
-If you don't have a `requirements.txt` file, you can install the required packages individually:
-
-```bash
-pip install requests click
-```
-
 ### 3. Make the Script Executable
 
 Make sure the `plog.py` script is executable:
