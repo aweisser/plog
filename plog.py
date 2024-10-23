@@ -6,12 +6,11 @@ import requests
 import click
 from datetime import datetime, timedelta
 
-# Base URL for Personio API
-PERSONIO_API_URL = "https://api.personio.de/v1"
+# Base URL for PLOG API (which is a proxy to the Personio API).
+PLOG_API_URL = os.getenv('PLOG_API_URL')
 
-# Load environment variables for API key and secret
-API_KEY = os.getenv('PERSONIO_API_KEY')
-API_SECRET = os.getenv('PERSONIO_API_SECRET')
+# User specific API token
+PLOG_API_TOKEN = os.getenv('PLOG_API_TOKEN')
 
 # File to store timer state (start, end)
 TIMER_FILE = 'plog.staging'
@@ -41,44 +40,28 @@ def delete_timer_state():
     if os.path.exists(TIMER_FILE):
         os.remove(TIMER_FILE)
 
-def authenticate():
-    """Authenticate with the Personio API and return the access token."""
-    url = f"{PERSONIO_API_URL}/auth"
-    response = requests.post(url, auth=(API_KEY, API_SECRET))
-    
-    if response.status_code == 200:
-        return response.json().get("data").get("token")
-    else:
-        raise Exception("Authentication failed")
-
-def log_work_to_personio(access_token, date, hours, description):
-    """Log work to Personio API."""
-    url = f"{PERSONIO_API_URL}/work_hours"
+def log_work_to_plog_api(attendances):
+    """Log work to Plog API."""
+    url = f"{PLOG_API_URL}/attendances"
     headers = {
-        'Authorization': f"Bearer {access_token}",
-        'Content-Type': 'application/json'
+        'Authorization': f"Bearer {PLOG_API_TOKEN}",
+        'Content-Type': 'application/json',
     }
     
-    payload = {
-        "date": date,
-        "hours": hours,
-        "description": description
-    }
+    payload = { "attendances": attendances }
 
     # Display human-readable payload information
-    click.echo(f"Sending the following data to Personio API:")
-    click.echo(f"Date: {date}")
-    click.echo(f"Hours worked: {hours:.2f}")
-    click.echo(f"Description: {description}")
+    click.echo(f"Sending the following data to Plog API:")
+    click.echo(f"{payload}")
 
     response = requests.post(url, json=payload, headers=headers)
     
     # Display the response in human-readable form
-    if response.status_code == 201:
-        click.echo(f"Response from Personio API:")
-        click.echo(f"Work logged successfully for {hours:.2f} hours on {date}.")
+    if response.status_code == 200:
+        click.echo(f"Response from Plog API:")
+        click.echo(response.text)
     else:
-        click.echo(f"Failed to log work. Response from Personio:")
+        click.echo(f"Failed to log work. Response from Plog:")
         click.echo(response.text)
 
 @click.group()
@@ -158,31 +141,38 @@ def status(all):
 @cli.command()
 @click.option('-m', '--message', prompt='Work description', help='Description of the work performed.')
 def push(message):
-    """Push all work logs to Personio and reset the timer."""
+    """Push all work logs to Plog API and reset the timer."""
     timers = load_timer_state()
     
     if not timers:
         click.echo("No timers found to push.")
         return
     
-    # Authenticate
-    try:
-        access_token = authenticate()
-    except Exception as e:
-        click.echo(f"Error: {e}")
-        return
-    
-    # Log each timer session to Personio
+    # Generate Personio API V1 style "attendances" items from timer sessions.
+    # https://developer.personio.de/reference/post_company-attendances
+    attendances = []
     for timer_start, timer_end in timers:
         if timer_end is None:
             timer_end = time.time()  # If timer is still running, stop it now
         
-        duration_in_seconds = timer_end - timer_start
-        hours_worked = duration_in_seconds / 3600
-        date = str(datetime.now().date())
-        
-        log_work_to_personio(access_token, date, hours_worked, message)
-    
+        start_dt = datetime.fromtimestamp(timer_start)
+        end_dt = datetime.fromtimestamp(timer_end)
+
+        if start_dt.date() != end_dt.date():
+            raise Exception(f"Error: Start and end date of each worklog entry must be the same. Call 'plog status', to evaluate.")
+
+        attendance = {
+            "comment": message,
+            "date": start_dt.strftime("%Y-%m-%d"),
+            "start_time": start_dt.strftime("%H:%M:%S"),
+            "end_time": end_dt.strftime("%H:%M:%S"),
+        }
+
+        attendances.append(attendance)
+
+    # Push the data through the Plog API to Personio.
+    log_work_to_plog_api(attendances)
+
     # Clear the timer state after successful push
     delete_timer_state()
     click.echo("All timers pushed and reset.")
